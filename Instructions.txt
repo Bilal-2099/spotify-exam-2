@@ -1,0 +1,186 @@
+sudo apt update
+sudo apt install python3-pip
+sudo apt install python3.12-venv
+sudo apt update
+sudo apt install unzip curl -y
+
+# Download AWS CLI v2
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+
+# Unzip the downloaded file
+unzip awscliv2.zip
+
+# Run the install script
+sudo ./aws/install
+
+# Verify the installation
+aws --version
+
+python3 -m venv airflow_venv
+source airflow_venv/bin/activate
+pip install boto3
+pip install pandas
+pip install s3fs
+pip install requests
+pip install apache-airflow
+pip install apache-airflow-providers-amazon
+aws s3 ls s3://spotify-bilal-exam/
+
+airflow standalone
+
+from io import StringIO
+import pandas as pd
+import boto3
+from datetime import datetime, timedelta
+import json
+import logging
+from airflow import DAG
+from airflow.providers.amazon.aws.hooks.s3 import S3Hook
+from airflow.operators.python import PythonOperator
+
+# Set up logging
+logger = logging.getLogger(__name__)
+
+# Function to process album data
+def process_album(data):
+    album_list = []
+    for row in data['items']:
+        album_info = row['track']['album']
+        album_element = {
+            'album_id': album_info['id'],
+            'name': album_info['name'],
+            'release_date': album_info['release_date'],
+            'total_tracks': album_info['total_tracks'],
+            'url': album_info['external_urls']['spotify']
+        }
+        album_list.append(album_element)
+    return album_list
+
+# Function to process artist data
+def process_artist(data):
+    artist_list = []
+    for row in data['items']:
+        for artist in row['track']['artists']:
+            artist_list.append({
+                'artist_id': artist['id'],
+                'artist_name': artist['name'],
+                'external_url': artist['href']
+            })
+    return artist_list
+
+# Function to process song data
+def process_songs(data):
+    song_list = []
+    for row in data['items']:
+        song_info = row['track']
+        song_element = {
+            'song_id': song_info['id'],
+            'song_name': song_info['name'],
+            'duration_ms': song_info['duration_ms'],
+            'url': song_info['external_urls']['spotify'],
+            'popularity': song_info['popularity'],
+            'song_added': row['added_at'],
+            'album_id': song_info['album']['id'],
+            'artist_id': song_info['album']['artists'][0]['id']
+        }
+        song_list.append(song_element)
+    return song_list
+
+# Function to download, process, and upload transformed data
+def process_file(bucket, file_key, **kwargs):
+    try:
+        # Using Airflow's S3Hook for better integration
+        s3_hook = S3Hook(aws_conn_id='aws_default')
+        file_content = s3_hook.read_key(key=file_key, bucket_name=bucket)
+        
+        if not file_content:
+            logger.warning(f"File {file_key} is empty or not found.")
+            return
+        
+        data = json.loads(file_content)
+
+        # Process the data
+        album_df = pd.DataFrame(process_album(data)).drop_duplicates(subset=['album_id'])
+        artist_df = pd.DataFrame(process_artist(data)).drop_duplicates(subset=['artist_id'])
+        song_df = pd.DataFrame(process_songs(data))
+
+        # Convert date columns to datetime
+        album_df['release_date'] = pd.to_datetime(album_df['release_date'], errors='coerce')
+        song_df['song_added'] = pd.to_datetime(song_df['song_added'])
+
+        # Save transformed data to S3
+        timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+        for name, df in [('songs', song_df), ('album', album_df), ('artist', artist_df)]:
+            buffer = StringIO()
+            df.to_csv(buffer, index=False)
+            buffer.seek(0)
+
+            # Upload the transformed data
+            s3_hook.load_string(
+                buffer.getvalue(),
+                key=f'transformed_data/{name}_data/{name}_transformed_{timestamp}.csv',
+                bucket_name=bucket,
+                replace=True
+            )
+            logger.info(f"Uploaded transformed {name} data to S3.")
+
+        # Move the processed file to 'processed' folder
+        s3_hook.copy_object(
+            source_bucket_name=bucket,
+            source_key=file_key,
+            dest_bucket_name=bucket,
+            dest_key=f'raw_data/processed/{file_key.split("/")[-1]}'
+        )
+        s3_hook.delete_objects(bucket_name=bucket, keys=[file_key])
+        logger.info(f"Moved {file_key} to processed folder and deleted the original.")
+    
+    except Exception as e:
+        logger.error(f"Error processing file {file_key}: {str(e)}")
+
+# Function to process all files in the S3 bucket folder
+def process_data_in_s3(**kwargs):
+    bucket = 'spotify-bilal-exam'
+    prefix = 'raw_data/to_processed/'
+
+    # Use Airflow's S3Hook for better integration
+    s3_hook = S3Hook(aws_conn_id='aws_default')
+    
+    # List files in the S3 folder
+    files = s3_hook.list_keys(bucket_name=bucket, prefix=prefix)
+    
+    if not files:
+        logger.warning(f"No files found in {prefix}.")
+        return
+
+    for file_key in files:
+        if file_key.endswith('.json'):
+            process_file(bucket, file_key, **kwargs)
+
+# Define default arguments
+default_args = {
+    'owner': 'airflow',
+    'retries': 1,
+    'retry_delay': timedelta(minutes=5),
+    'start_date': datetime(2023, 1, 1),
+}
+
+# Define the DAG
+dag = DAG(
+    's3_data_transform_dag',
+    default_args=default_args,
+    description='A DAG to process and transform S3 data',
+    schedule_interval='@daily',
+    catchup=False,
+)
+
+# Define the task
+process_task = PythonOperator(
+    task_id='process_data_in_s3',
+    python_callable=process_data_in_s3,
+    provide_context=True,
+    dag=dag,
+)
+
+# You can add more tasks here if needed, but this one will execute the data transformation.
+
+

@@ -1,0 +1,3 @@
+SELECT * From songs_data limit 10;
+SELECT * From artist_data limit 10;
+SELECT * From album_data limit 10;
