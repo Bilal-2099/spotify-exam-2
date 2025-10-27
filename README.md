@@ -79,15 +79,3 @@ Here’s how you can get it running locally:
 ## 👤 Author  
 This project was created by **Bilal Raza — Python developer and Data Engineering student at S.M.I.T. under Sir Qasim Hassan.  
 GitHub: [Bilal‑2099](https://github.com/Bilal‑2099)**
-
-## 📌 Next Steps / Improvements  
-- Add a `README_images/` folder with screenshots of outputs or dashboards.  
-- Write additional scripts or modules to **transform** the raw data into analytics‑ready forms.  
-- Package the solution using **Docker** or **Terraform** for infrastructure.  
-- Add **error handling**, logging, and rate‑limit/back‑off logic for production readiness.  
-- Integrate the data into a **dashboard** (e.g., Power BI, Tableau, or a Django web front‑end).  
-
----
-
-### 📄 License  
-_(Add your preferred license here, e.g., MIT License)_
